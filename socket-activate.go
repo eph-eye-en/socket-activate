@@ -18,6 +18,7 @@ var (
 	destinationAddress = flag.String("a", "127.0.0.1:80", "destination address")
 	timeout            = flag.Duration("t", 0, "inactivity timeout after which to stop the unit again")
 	retries            = flag.Uint("r", 10, "number of connection attempts (with 100ms delay) before giving up")
+	user               = flag.Bool("user", false, "use user systemd rather than system")
 )
 
 type unitController struct {
@@ -26,7 +27,13 @@ type unitController struct {
 }
 
 func newUnitController(name string) unitController {
-	conn, err := dbus.SystemBus()
+	var conn *dbus.Conn
+	var err error
+	if *user {
+		conn, err = dbus.SessionBus()
+	} else {
+		conn, err = dbus.SystemBus()
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
