@@ -13,9 +13,9 @@ import (
 )
 
 var (
-	mode               = flag.String("m", "tcp", "mode, available: tcp")
+	mode               = flag.String("m", "tcp", "mode, accepting anything accepted by Go's net.Dial")
 	targetUnit         = flag.String("u", "null.service", "corresponding unit")
-	destinationAddress = flag.String("a", "127.0.0.1:80", "destination address")
+	destinationAddress = flag.String("a", "127.0.0.1:80", "destination address, accepting anything accepted by Go's net.Dial")
 	timeout            = flag.Duration("t", 0, "inactivity timeout after which to stop the unit again")
 	retries            = flag.Uint("r", 10, "number of connection attempts (with 100ms delay) before giving up")
 	user               = flag.Bool("user", false, "use user systemd rather than system")
@@ -98,13 +98,6 @@ func startTCPProxy(activityMonitor chan<- bool) {
 	}
 	defer l.Close()
 
-	var sock_type string
-	if _, err := os.Stat(*destinationAddress); err != nil {
-		sock_type = "unix"
-	} else {
-		sock_type = "tcp"
-	}
-
 	for {
 		activityMonitor <- true
 		connOutwards, err := l.Accept()
@@ -116,7 +109,7 @@ func startTCPProxy(activityMonitor chan<- bool) {
 		var connBackend net.Conn
 		var tryCount uint
 		for tryCount = 0; tryCount < *retries; tryCount++ {
-			connBackend, err = net.Dial(sock_type, *destinationAddress)
+			connBackend, err = net.Dial(*mode, *destinationAddress)
 			if err != nil {
 				fmt.Println(err)
 				time.Sleep(100 * time.Millisecond)
