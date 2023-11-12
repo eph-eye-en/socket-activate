@@ -6,10 +6,10 @@ import (
 	"log"
 	"net"
 	"os"
-	"strconv"
 	"time"
 
-	"github.com/godbus/dbus"
+	"github.com/coreos/go-systemd/v22/activation"
+	"github.com/coreos/go-systemd/v22/dbus"
 )
 
 var (
@@ -30,9 +30,9 @@ func newUnitController(name string) unitController {
 	var conn *dbus.Conn
 	var err error
 	if *user {
-		conn, err = dbus.SessionBus()
+		conn, err = dbus.NewUserConnectionContext(nil)
 	} else {
-		conn, err = dbus.SystemBus()
+		conn, err = dbus.NewSystemConnectionContext(nil)
 	}
 	if err != nil {
 		log.Fatal(err)
@@ -41,23 +41,17 @@ func newUnitController(name string) unitController {
 }
 
 func (unitCtrl unitController) startSystemdUnit() {
-	var responseObjPath dbus.ObjectPath
-	obj := unitCtrl.conn.Object("org.freedesktop.systemd1", dbus.ObjectPath("/org/freedesktop/systemd1"))
-	err := obj.Call("org.freedesktop.systemd1.Manager.StartUnit", 0, unitCtrl.unitname, "replace").Store(&responseObjPath)
+	_, err := unitCtrl.conn.StartUnitContext(nil, unitCtrl.unitname, "replace", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-
 }
 
 func (unitCtrl unitController) stopSystemdUnit() {
-	var responseObjPath dbus.ObjectPath
-	obj := unitCtrl.conn.Object("org.freedesktop.systemd1", dbus.ObjectPath("/org/freedesktop/systemd1"))
-	err := obj.Call("org.freedesktop.systemd1.Manager.StopUnit", 0, unitCtrl.unitname, "replace").Store(&responseObjPath)
+	_, err := unitCtrl.conn.StopUnitContext(nil, unitCtrl.unitname, "replace", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-
 }
 
 func (unitCtrl unitController) terminateWithoutActivity(activity <-chan bool) {
@@ -91,16 +85,10 @@ func proxyNetworkConnections(from net.Conn, to net.Conn, activityMonitor chan<- 
 	}
 }
 
-func startTCPProxy(activityMonitor chan<- bool) {
-	l, err := net.FileListener(os.NewFile(3, "systemd-socket"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer l.Close()
-
+func startTCPProxy(listener net.Listener, activityMonitor chan<- bool) {
 	for {
 		activityMonitor <- true
-		connOutwards, err := l.Accept()
+		connOutwards, err := listener.Accept()
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -131,19 +119,19 @@ func main() {
 
 	flag.Parse()
 
-	if os.Getenv("LISTEN_PID") == strconv.Itoa(os.Getpid()) {
-
-		unitCtrl := newUnitController(*targetUnit)
-
-		activityMonitor := make(chan bool)
-		go unitCtrl.terminateWithoutActivity(activityMonitor)
-
-		// first, connect to systemd for starting the unit
-		unitCtrl.startSystemdUnit()
-
-		// then take over the socket from systemd
-		startTCPProxy(activityMonitor)
-	} else {
-		log.Fatal("seems not to be systemd-activated, aborting")
+	ls, err := activation.Listeners()
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	unitCtrl := newUnitController(*targetUnit)
+
+	activityMonitor := make(chan bool)
+	go unitCtrl.terminateWithoutActivity(activityMonitor)
+
+	// first, connect to systemd for starting the unit
+	unitCtrl.startSystemdUnit()
+
+	// then take over the socket from systemd
+	startTCPProxy(ls[0], activityMonitor)
 }

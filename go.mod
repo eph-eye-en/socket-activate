@@ -2,4 +2,4 @@ module github.com/cherti/socket-activate
 
 go 1.14
 
-require github.com/godbus/dbus v4.1.0+incompatible
+require github.com/coreos/go-systemd/v22 v22.5.0
