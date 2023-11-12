@@ -11,13 +11,17 @@ This is a little tool to add systemd socket activation to services that do not s
 ### socket-activate itself
     Usage of ./socket-activate:
       -a string
-            destination address (default "127.0.0.1:80")
+            destination address, accepting anything accepted by Go's net.Dial (default "127.0.0.1:80")
       -m string
-            mode, available: tcp (default "tcp")
+            mode, accepting anything accepted by Go's net.Dial (default "tcp")
       -t duration
             inactivity timeout after which to stop the unit again
       -u string
             corresponding unit (default "null.service")
+      -r int
+            number of connection attempts (with 100ms delay) before giving up (default "10")
+      --user
+            use user systemd rather than system (default "false")
 
 ### Usage example: Grafana
 
