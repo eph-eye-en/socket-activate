@@ -1,11 +1,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"time"
 
 	"github.com/coreos/go-systemd/v22/activation"
@@ -24,37 +24,38 @@ var (
 type unitController struct {
 	conn     *dbus.Conn
 	unitname string
+	ctx      context.Context
 }
 
-func newUnitController(name string) unitController {
+func newUnitController(name string, ctx context.Context) unitController {
 	var conn *dbus.Conn
 	var err error
 	if *user {
-		conn, err = dbus.NewUserConnectionContext(nil)
+		conn, err = dbus.NewUserConnectionContext(ctx)
 	} else {
-		conn, err = dbus.NewSystemConnectionContext(nil)
+		conn, err = dbus.NewSystemConnectionContext(ctx)
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
-	return unitController{conn, name}
+	return unitController{conn, name, ctx}
 }
 
 func (unitCtrl unitController) startSystemdUnit() {
-	_, err := unitCtrl.conn.StartUnitContext(nil, unitCtrl.unitname, "replace", nil)
+	_, err := unitCtrl.conn.StartUnitContext(unitCtrl.ctx, unitCtrl.unitname, "replace", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
 func (unitCtrl unitController) stopSystemdUnit() {
-	_, err := unitCtrl.conn.StopUnitContext(nil, unitCtrl.unitname, "replace", nil)
+	_, err := unitCtrl.conn.StopUnitContext(unitCtrl.ctx, unitCtrl.unitname, "replace", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
-func (unitCtrl unitController) terminateWithoutActivity(activity <-chan bool) {
+func (unitCtrl unitController) cancelWithoutActivity(activity <-chan bool, cancel context.CancelFunc) {
 	var timeoutCh <-chan time.Time
 	if *timeout > 0 {
 		timeoutCh = time.After(*timeout)
@@ -65,19 +66,18 @@ func (unitCtrl unitController) terminateWithoutActivity(activity <-chan bool) {
 		case <-activity:
 		case <-timeoutCh:
 			unitCtrl.stopSystemdUnit()
-			os.Exit(0)
+			cancel()
 		}
 	}
 }
 
-func proxyNetworkConnections(from net.Conn, to net.Conn, activityMonitor chan<- bool) {
+func proxyNetworkConnections(from net.Conn, to net.Conn, activityMonitor chan<- bool, cancel context.CancelFunc) {
 	buffer := make([]byte, 1024)
 
 	for {
 		i, err := from.Read(buffer)
 		if err != nil {
-			from.Close()
-			to.Close()
+			cancel()
 			return // EOF (if anything else, we scrap the connection anyways)
 		}
 		activityMonitor <- true
@@ -85,7 +85,13 @@ func proxyNetworkConnections(from net.Conn, to net.Conn, activityMonitor chan<- 
 	}
 }
 
-func startTCPProxy(listener net.Listener, activityMonitor chan<- bool) {
+func closeOnCancel(ctx context.Context, a net.Conn, b net.Conn) {
+	<-ctx.Done()
+	a.Close()
+	b.Close()
+}
+
+func startTCPProxy(listener net.Listener, activityMonitor chan<- bool, ctx context.Context) {
 	for {
 		activityMonitor <- true
 		connOutwards, err := listener.Accept()
@@ -110,8 +116,10 @@ func startTCPProxy(listener net.Listener, activityMonitor chan<- bool) {
 			continue
 		}
 
-		go proxyNetworkConnections(connOutwards, connBackend, activityMonitor)
-		go proxyNetworkConnections(connBackend, connOutwards, activityMonitor)
+		ctx2, cancel := context.WithCancel(ctx)
+		go proxyNetworkConnections(connOutwards, connBackend, activityMonitor, cancel)
+		go proxyNetworkConnections(connBackend, connOutwards, activityMonitor, cancel)
+		go closeOnCancel(ctx2, connOutwards, connBackend)
 	}
 }
 
@@ -124,14 +132,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	unitCtrl := newUnitController(*targetUnit)
+	ctx, cancel := context.WithCancel(context.Background())
+	unitCtrl := newUnitController(*targetUnit, ctx)
 
 	activityMonitor := make(chan bool)
-	go unitCtrl.terminateWithoutActivity(activityMonitor)
+	go unitCtrl.cancelWithoutActivity(activityMonitor, cancel)
 
 	// first, connect to systemd for starting the unit
 	unitCtrl.startSystemdUnit()
 
 	// then take over the socket from systemd
-	startTCPProxy(ls[0], activityMonitor)
+	startTCPProxy(ls[0], activityMonitor, ctx)
 }
