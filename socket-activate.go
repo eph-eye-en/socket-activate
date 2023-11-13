@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -85,7 +86,7 @@ func proxyNetworkConnections(from net.Conn, to net.Conn, activityMonitor chan<- 
 	}
 }
 
-func closeOnCancel(ctx context.Context, a net.Conn, b net.Conn) {
+func closeConnsOnCancel(ctx context.Context, a net.Conn, b net.Conn) {
 	<-ctx.Done()
 	a.Close()
 	b.Close()
@@ -96,7 +97,9 @@ func startTCPProxy(listener net.Listener, activityMonitor chan<- bool, ctx conte
 		activityMonitor <- true
 		connOutwards, err := listener.Accept()
 		if err != nil {
-			fmt.Println(err)
+			if !errors.Is(err, net.ErrClosed) {
+				fmt.Println(err)
+			}
 			return
 		}
 
@@ -119,8 +122,13 @@ func startTCPProxy(listener net.Listener, activityMonitor chan<- bool, ctx conte
 		ctx2, cancel := context.WithCancel(ctx)
 		go proxyNetworkConnections(connOutwards, connBackend, activityMonitor, cancel)
 		go proxyNetworkConnections(connBackend, connOutwards, activityMonitor, cancel)
-		go closeOnCancel(ctx2, connOutwards, connBackend)
+		go closeConnsOnCancel(ctx2, connOutwards, connBackend)
 	}
+}
+
+func closeListenerOnCancel(l net.Listener, ctx context.Context) {
+	<-ctx.Done()
+	l.Close()
 }
 
 func main() {
@@ -142,5 +150,6 @@ func main() {
 	unitCtrl.startSystemdUnit()
 
 	// then take over the socket from systemd
+	go closeListenerOnCancel(ls[0], ctx)
 	startTCPProxy(ls[0], activityMonitor, ctx)
 }
